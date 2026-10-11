@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Лаборатория протоколов — Мадригал</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f9; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #2c3e50; color: white; }
+        .btn { padding: 6px 12px; background: #3498db; color: white; text-decoration: none; border-radius: 4px; }
+        .btn:hover { background: #2980b9; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Лаборатория протоколов МАДРИГАЛ</h1>
+        <p>Роль 5: Интерфейс исследователя</p>
+        
+        <h2>Список сетевых сессий</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID Сессии</th>
+                    <th>Направление</th>
+                    <th>Количество пакетов</th>
+                    <th>Статус</th>
+                    <th>Действие</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for session in sessions %}
+                <tr>
+                    <td>{{ session.id }}</td>
+                    <td>{{ session.direction }}</td>
+                    <td>{{ session.packets_count }}</td>
+                    <td>{{ session.status }}</td>
+                    <td><a href="/session/{{ session.id }}" class="btn">Исследовать</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
