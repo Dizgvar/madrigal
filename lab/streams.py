@@ -108,18 +108,21 @@ class DirectedStream:
         self.pieces, self.dups, self.conflicts = [], [], []
         self.truncated, self.excluded = [], []   # (start, declared_end, pkt_no)
         self.start_known, self.end_pos = False, None
+        self.seen_end = 0           # конец самого дальнего ОБРЕЗАННОГО пакета (для хвостовой дыры)
+        self._known = 0             # счётчик известных байт (не пересчитываем сумму каждый раз)
         self.base_raw = 0
         self.warnings, self.error = [], None
         self._hash = None
 
     @property
     def known_bytes(self):
-        return sum(p.end - p.start for p in self.pieces)
+        return self._known
 
     # --- добавление байтов ---
     def _add(self, s, e, data, pkt, poff):
         if not self.pieces or s >= self.pieces[-1].end:       # быстрый путь: данные по порядку
             self.pieces.append(Piece(s, e, data, pkt, poff))
+            self._known += e - s
             return
         key = lambda p: p.start
         j = max(bisect.bisect_right(self.pieces, s, key=key) - 1, 0)
@@ -145,6 +148,7 @@ class DirectedStream:
             j += 1
         for a, b in free:
             bisect.insort(self.pieces, Piece(a, b, data[a - s:b - s], pkt, poff + a - s), key=key)
+            self._known += b - a
 
     # --- представление ---
     def _gap_reason(self, a, b):
@@ -185,8 +189,9 @@ class DirectedStream:
             if cur < p.end:
                 put(cur, p.end, "known", p.data[cur - p.start:])
             pos = p.end
-        if self.end_pos is not None and self.end_pos > pos:
-            put(pos, self.end_pos, "gap", None, self._gap_reason(pos, self.end_pos))
+        tail = max(self.end_pos or 0, self.seen_end)
+        if tail > pos:
+            put(pos, tail, "gap", None, self._gap_reason(pos, tail))
         return [Span(a, b, k, (b"".join(c) if c is not None else None), n) for a, b, k, c, n in out]
 
     def trace(self, a, b):
@@ -268,6 +273,14 @@ def build_stream(session, direction, overlap_policy="first", checksum_policy="re
             st._add(start, start + len(s.payload), s.payload, s.pkt_no, s.payload_off)
         if st.known_bytes > MAX_STREAM_BYTES:
             raise MemoryError("LIMIT_EXCEEDED: поток больше %d байт" % MAX_STREAM_BYTES)
+    st.seen_end = max((e for _, e, _ in st.truncated), default=0)
+    if checksum_policy == "strict" and st.excluded:
+        st.warnings.append("%d пакетов ИСКЛЮЧЕНО из-за неверной checksum (политика strict)" % len(st.excluded))
+    elif checksum_policy == "report":
+        bad = sum(1 for x in segs if x.checksum == "bad")
+        if bad:
+            st.warnings.append("%d пакетов с неверной checksum оставлены в потоке (политика report); "
+                               "при записи на самой машине это может быть checksum offloading" % bad)
     if st.conflicts:
         st.warnings.append("%d перекрытий с РАЗНЫМИ данными (политика: %s)" % (len(st.conflicts), overlap_policy))
     if st.truncated:

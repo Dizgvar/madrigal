@@ -40,16 +40,28 @@ def import_capture(project, path, progress=None):
 
 
 def list_sessions(project, source_id):
-    """РАБОТАЕТ. Список Session источника."""
-    return project.sources[source_id]["sessions"]
+    """РАБОТАЕТ. Список Session источника.
+
+    После open_project сессий в памяти нет (кэш - это то, что пересобирается), поэтому при первом
+    обращении источник разбирается заново из sources/. Исходный файл только читается.
+    """
+    entry = project.sources[source_id]
+    if not entry["sessions"]:
+        sid, sessions, diag = import_source(Path(project.path) / entry["path"])
+        if sid != source_id:
+            raise LabError("SOURCE_CHANGED", "source content differs from its hash", source_id=source_id)
+        entry["sessions"], entry["diag"] = sessions, dict(diag)
+    return entry["sessions"]
 
 
 def get_stream(project, session_id, direction, overlap_policy="first", checksum_policy="report"):
     """РАБОТАЕТ. DirectedStream нужной сессии и направления."""
-    for src in project.sources.values():
-        for s in src["sessions"]:
-            if s.session_id == session_id:
-                return build_stream(s, direction, overlap_policy, checksum_policy)
+    prefix = session_id.split(":")[0]               # session_id = <12 символов source_id>:<номер>
+    for sid in project.sources:
+        if sid.startswith(prefix):
+            for s in list_sessions(project, sid):
+                if s.session_id == session_id:
+                    return build_stream(s, direction, overlap_policy, checksum_policy)
     raise KeyError(session_id)
 
 
