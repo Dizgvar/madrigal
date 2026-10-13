@@ -5,21 +5,37 @@
   ЗАГЛУШКА  - возвращает фиктивные данные правильного формата, чтобы остальные
               могли работать, пока модуль не готов. Заглушки помечены "stub": True.
 """
-from .models import Anchor, Project
+from pathlib import Path
+
+from . import project as _project
+from .models import Anchor, LabError
 from .streams import build_stream, import_source
 
 
-def open_project(path):
-    """ЗАГЛУШКА. Потом: читает project.json, сверяет SHA-256 источников."""
-    return Project(path=str(path))
+def create_project(path, name):
+    """РАБОТАЕТ. Создаёт папку проекта (project.json, sources/, cache/)."""
+    return _project.create_project(path, name)
+
+
+def open_project(path, progress=None):
+    """РАБОТАЕТ. Открывает проект и сверяет SHA-256 всех источников."""
+    return _project.open_project(path, progress=progress)
 
 
 def import_capture(project, path, progress=None):
-    """РАБОТАЕТ (пока в памяти). Файл -> source_id. Повторный импорт того же файла не создаёт дубль."""
-    sid, sessions, diag = import_source(path, progress)
-    already = sid in project.sources
-    project.sources.setdefault(sid, {"path": str(path), "sessions": sessions, "diag": dict(diag)})
-    return {"source_id": sid, "already_imported": already, "diag": dict(diag), "sessions": len(sessions)}
+    """РАБОТАЕТ. Копирует файл в sources/ проекта и разбирает копию.
+
+    Повторный импорт того же содержимого (даже под другим именем) не создаёт дубль.
+    Сессии пока держатся в памяти (SQLite-кэш будет позже).
+    """
+    added = _project.add_source(project.path, path)
+    sid, sessions, diag = import_source(Path(project.path) / added.path, progress)
+    if sid != added.source_id:
+        raise LabError("SOURCE_CHANGED", "hash mismatch right after copy", source_id=added.source_id)
+    entry = project.sources.setdefault(sid, {"path": added.path, "sessions": [], "diag": {}})
+    entry["sessions"], entry["diag"] = sessions, dict(diag)
+    return {"source_id": sid, "already_imported": added.already_added,
+            "diag": dict(diag), "sessions": len(sessions)}
 
 
 def list_sessions(project, source_id):
