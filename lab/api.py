@@ -9,7 +9,8 @@ from pathlib import Path
 
 from . import project as _project
 from .models import Anchor, LabError
-from .streams import build_stream, import_source
+from .streams import build_all, build_stream, import_source
+from .views import DEFAULT_WINDOW, session_to_dict, stream_to_dict
 
 
 def create_project(path, name):
@@ -50,6 +51,27 @@ def get_stream(project, session_id, direction, overlap_policy="first", checksum_
             if s.session_id == session_id:
                 return build_stream(s, direction, overlap_policy, checksum_policy)
     raise KeyError(session_id)
+
+
+def describe_sessions(project, source_id) -> list:
+    """РАБОТАЕТ. Сессии источника в виде словарей (для таблицы «Сессии», JSON-совместимо)."""
+    sessions = list_sessions(project, source_id)
+    built = build_all(sessions)
+    return [session_to_dict(s, {d: built[(s.session_id, d)] for d in ("A>B", "B>A")}) for s in sessions]
+
+
+def describe_stream(project, session_id, direction, offset=0, limit=DEFAULT_WINDOW) -> dict:
+    """РАБОТАЕТ. Поток для hex-просмотрщика: куски known/gap/conflict, hex, предупреждения.
+
+    Показывает окно [offset, offset+limit); если поток больше, window.truncated=True.
+    Дыра имеет hex=None. Слишком большой поток даёт error вместо исключения.
+    """
+    try:
+        stream = get_stream(project, session_id, direction)
+    except MemoryError as e:           # лимит размера: одна сессия не должна ломать остальные
+        return {"session_id": session_id, "direction": direction, "error": str(e),
+                "spans": [], "conflicts": [], "warnings": []}
+    return stream_to_dict(stream, offset, limit)
 
 
 def trace(project, session_id, direction, start, end) -> list:
