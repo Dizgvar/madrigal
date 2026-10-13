@@ -127,6 +127,8 @@ def _read_pcapng(f, diag):
             return
         body = body[:-4]                               # хвостовая копия длины
         if btype == 1:                                 # Interface Description Block
+            if len(body) < 8:
+                raise CaptureError("BAD_PCAPNG: слишком короткий Interface Description Block")
             link, _res, _snap = struct.unpack(endian + "HHI", body[:8])
             tsres, off = 6, 8
             while off + 4 <= len(body):
@@ -138,12 +140,16 @@ def _read_pcapng(f, diag):
                 off += 4 + ln + (-ln) % 4
             ifaces.append((link, _units(tsres)))
         elif btype == 6:                               # Enhanced Packet Block
+            if len(body) < 20:
+                raise CaptureError("BAD_PCAPNG: слишком короткий Enhanced Packet Block")
             iface, th, tl, cap, orig = struct.unpack(endian + "IIIII", body[:20])
             if iface >= len(ifaces):
                 diag["pcapng_bad_interface"] += 1
                 continue
             if cap > LIMITS["max_frame_len"]:
                 raise CaptureError("BAD_RECORD: кадр заявляет длину %d" % cap)
+            if 20 + cap > len(body):
+                raise CaptureError("BAD_PCAPNG: пакет заявляет %d байт, а в блоке только %d" % (cap, len(body) - 20))
             link, units = ifaces[iface]
             n += 1
             yield Frame(n, ((th << 32) | tl) * 1_000_000 // units, body[20:20 + cap], orig, link, iface)
