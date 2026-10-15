@@ -5,35 +5,85 @@
   ЗАГЛУШКА  - возвращает фиктивные данные правильного формата, чтобы остальные
               могли работать, пока модуль не готов. Заглушки помечены "stub": True.
 """
-from .models import Anchor, Project
-from .streams import build_stream, import_source
+from pathlib import Path
+
+from . import project as _project
+from .models import Anchor, LabError
+from .streams import build_all, build_stream, import_source
+from .views import DEFAULT_WINDOW, session_to_dict, stream_to_dict
 
 
-def open_project(path):
-    """ЗАГЛУШКА. Потом: читает project.json, сверяет SHA-256 источников."""
-    return Project(path=str(path))
+def create_project(path, name):
+    """РАБОТАЕТ. Создаёт папку проекта (project.json, sources/, cache/)."""
+    return _project.create_project(path, name)
+
+
+def open_project(path, progress=None):
+    """РАБОТАЕТ. Открывает проект и сверяет SHA-256 всех источников."""
+    return _project.open_project(path, progress=progress)
 
 
 def import_capture(project, path, progress=None):
-    """РАБОТАЕТ (пока в памяти). Файл -> source_id. Повторный импорт того же файла не создаёт дубль."""
-    sid, sessions, diag = import_source(path, progress)
-    already = sid in project.sources
-    project.sources.setdefault(sid, {"path": str(path), "sessions": sessions, "diag": dict(diag)})
-    return {"source_id": sid, "already_imported": already, "diag": dict(diag), "sessions": len(sessions)}
+    """РАБОТАЕТ. Копирует файл в sources/ проекта и разбирает копию.
+
+    Повторный импорт того же содержимого (даже под другим именем) не создаёт дубль.
+    Сессии пока держатся в памяти (SQLite-кэш будет позже).
+    """
+    added = _project.add_source(project.path, path)
+    sid, sessions, diag = import_source(Path(project.path) / added.path, progress)
+    if sid != added.source_id:
+        raise LabError("SOURCE_CHANGED", "hash mismatch right after copy", source_id=added.source_id)
+    entry = project.sources.setdefault(sid, {"path": added.path, "sessions": [], "diag": {}})
+    entry["sessions"], entry["diag"] = sessions, dict(diag)
+    return {"source_id": sid, "already_imported": added.already_added,
+            "diag": dict(diag), "sessions": len(sessions)}
 
 
 def list_sessions(project, source_id):
-    """РАБОТАЕТ. Список Session источника."""
-    return project.sources[source_id]["sessions"]
+    """РАБОТАЕТ. Список Session источника.
+
+    После open_project сессий в памяти нет (кэш - это то, что пересобирается), поэтому при первом
+    обращении источник разбирается заново из sources/. Исходный файл только читается.
+    """
+    entry = project.sources[source_id]
+    if not entry["sessions"]:
+        sid, sessions, diag = import_source(Path(project.path) / entry["path"])
+        if sid != source_id:
+            raise LabError("SOURCE_CHANGED", "source content differs from its hash", source_id=source_id)
+        entry["sessions"], entry["diag"] = sessions, dict(diag)
+    return entry["sessions"]
 
 
 def get_stream(project, session_id, direction, overlap_policy="first", checksum_policy="report"):
     """РАБОТАЕТ. DirectedStream нужной сессии и направления."""
-    for src in project.sources.values():
-        for s in src["sessions"]:
-            if s.session_id == session_id:
-                return build_stream(s, direction, overlap_policy, checksum_policy)
+    prefix = session_id.split(":")[0]               # session_id = <12 символов source_id>:<номер>
+    for sid in project.sources:
+        if sid.startswith(prefix):
+            for s in list_sessions(project, sid):
+                if s.session_id == session_id:
+                    return build_stream(s, direction, overlap_policy, checksum_policy)
     raise KeyError(session_id)
+
+
+def describe_sessions(project, source_id) -> list:
+    """РАБОТАЕТ. Сессии источника в виде словарей (для таблицы «Сессии», JSON-совместимо)."""
+    sessions = list_sessions(project, source_id)
+    built = build_all(sessions)
+    return [session_to_dict(s, {d: built[(s.session_id, d)] for d in ("A>B", "B>A")}) for s in sessions]
+
+
+def describe_stream(project, session_id, direction, offset=0, limit=DEFAULT_WINDOW) -> dict:
+    """РАБОТАЕТ. Поток для hex-просмотрщика: куски known/gap/conflict, hex, предупреждения.
+
+    Показывает окно [offset, offset+limit); если поток больше, window.truncated=True.
+    Дыра имеет hex=None. Слишком большой поток даёт error вместо исключения.
+    """
+    try:
+        stream = get_stream(project, session_id, direction)
+    except MemoryError as e:           # лимит размера: одна сессия не должна ломать остальные
+        return {"session_id": session_id, "direction": direction, "error": str(e),
+                "spans": [], "conflicts": [], "warnings": []}
+    return stream_to_dict(stream, offset, limit)
 
 
 def trace(project, session_id, direction, start, end) -> list:
