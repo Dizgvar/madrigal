@@ -54,11 +54,11 @@ def find_by_action(project, action_id, window_s=2.0):
 def compare(project, ranges):
     """ЗАГЛУШКА (роль 3). Побайтовое сравнение диапазонов."""
     return {"stub": True, "rows": [{"pos": 0, "a": 0xAB, "b": 0xAB, "same": True},
-                                   {"pos": 6, "a": 0x15, "b": 0x1E, "same": False}]}
+                                 {"pos": 6, "a": 0x15, "b": 0x1E, "same": False}]}
 
 
 def apply_interpretation(project, stream, interp):
-    """ЗАГЛУШКА (роль 4). Поток + интерпретация -> список ParsedMessage."""
+    """ЗАГЛUШКА (роль 4). Поток + интерпретация -> список ParsedMessage."""
     return [{"stub": True, "start": 0, "end": 8, "status": "COMPLETE",
              "fields": [{"name": "magic", "start": 0, "end": 2, "status": "RULE"},
                         {"name": "value", "start": 6, "end": 7, "status": "HYPOTHESIS"},

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Сессия {{ session.session_id }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f9; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; }
+        a { color: #3498db; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        ul { line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <a href="/">&larr; Назад к списку сессий</a>
+        <h1>Сессия: {{ session.session_id }}</h1>
+        <p><strong>Направление:</strong> {{ session.direction }}</p>
+        
+        <h2>Пакеты в сессии:</h2>
+        <ul>
+            {% for pkt in packets %}
+                <li>Пакет №{{ loop.index }}: данные длиной {{ pkt | length if pkt is iterable else 'Н/Д' }} байт</li>
+            {% else %}
+                <li>Пакеты не найдены или диапазон пуст.</li>
+            {% endfor %}
+        </ul>
+    </div>
+</body>
+</html>
