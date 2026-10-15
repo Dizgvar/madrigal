@@ -126,10 +126,11 @@ def noise(t0, seed):
     """Фоновое соединение + ARP-кадр: приложение должно их пережить и не смешать с целевым обменом."""
     rnd = random.Random(seed)
     a, b, s1, s2 = ("10.0.0.6", 40000), ("10.0.0.7", 80), 1000, 5000
-    out = [Pkt(t0 + 1500, (a, b, s1, 0, SYN))]
+    out, nxt = [Pkt(t0 + 1500, (a, b, s1, 0, SYN))], s1 + 1
     for k in range(5):
         body = bytes(rnd.randrange(256) for _ in range(rnd.randrange(20, 300)))
-        out.append(Pkt(t0 + 3_000_000 * (k + 1), (a, b, s1 + 1 + k * 300, s2, ACK, body)))
+        out.append(Pkt(t0 + 3_000_000 * (k + 1), (a, b, nxt, s2, ACK, body)))
+        nxt += len(body)
     arp = b"\xff" * 6 + mac("10.0.0.5") + b"\x08\x06" + bytes(28)
     return out + [Pkt(t0 + 2_500_000, raw=arp)]
 

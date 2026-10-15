@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import stat
 import tempfile
@@ -18,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from . import __version__
 from .models import LabError, Project
 
 log = logging.getLogger(__name__)
@@ -31,6 +33,12 @@ _CHUNK = 1024 * 1024
 _SOURCE_ID_RE = re.compile(r"[0-9a-f]{64}")
 _SUFFIX_RE = re.compile(r"\.[a-z0-9]{1,8}")
 _DRIVE_RE = re.compile(r"[A-Za-z]:")
+
+# Настройки проекта по умолчанию. Хранятся в project.json, чтобы быть видимыми и переносимыми.
+DEFAULT_SETTINGS = {
+    "reassembly": {"overlap_policy": "first", "checksum_policy": "report"},
+    "time": {"clock_offset_s": 0.0},
+}
 
 PathLike = str | os.PathLike[str]
 # progress(source_id, байт_обработано, байт_всего)
@@ -146,7 +154,11 @@ def create_project(path: PathLike, name: str) -> Project:
         raise _bad_project("project already exists", path=str(root))
     (root / SOURCES_DIR).mkdir(parents=True, exist_ok=True)
     (root / CACHE_DIR).mkdir(exist_ok=True)
-    _write_manifest(root, {"format_version": FORMAT_VERSION, "name": name, "sources": {}})
+    _write_manifest(root, {
+        "format_version": FORMAT_VERSION, "name": name, "sources": {},
+        "tool": {"name": "madrigal-lab", "version": __version__, "python": platform.python_version()},
+        "settings": json.loads(json.dumps(DEFAULT_SETTINGS)),
+    })
     log.info("project created: %s", root)
     return Project(path=str(root.resolve()), name=name, sources={})
 
