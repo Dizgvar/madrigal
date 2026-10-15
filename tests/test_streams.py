@@ -1,5 +1,5 @@
 """Тесты сборки потока: по одному на каждую ситуацию из раздела 7.3 кейса."""
-from lab.capture import ACK, FIN, SYN, Segment
+from lab.capture import ACK, FIN, SYN, RST, Segment
 from lab.streams import build_all, build_stream, split_sessions
 
 C, S = ("10.0.0.5", 51000), ("10.0.0.9", 5020)
@@ -111,12 +111,19 @@ def test_seq_wraparound():
     assert known(st) == b"AAAABBBB"
 
 def test_seq_wraparound_with_syn():
-    """SYN около 2**32, данные переходят через ноль."""
+    """SYN около 2**32, данные переходят через ноль.
+
+    ISN = 0xFFFFFFFE. Байт №0 данных имеет seq = 0xFFFFFFFF.
+    Порядок в потоке:
+      seq 0xFFFFFFFF → байты 0..3   'AAAA'
+      seq 0x00000003 → байты 4..7   'BBBB'   (0xFFFFFFFF + 4 = 0x100000003)
+      seq 0x00000007 → байты 8..11  'CCCC'
+    """
     st = stream_of([
-        seg(1, 0xFFFFFFFE, flags=SYN),           # ISN = 2**32-2
-        seg(2, 0xFFFFFFFF, b"AAAA"),              # данные с 2**32-1
-        seg(3, 0, b"BBBB"),                       # seq перескочил через ноль
-        seg(4, 4, b"CCCC"),
+        seg(1, 0xFFFFFFFE, flags=SYN),    # SYN, ISN = 2**32-2
+        seg(2, 0xFFFFFFFF, b"AAAA"),      # данные 0..3
+        seg(3, 3, b"BBBB"),                # данные 4..7 (после перескока через 2**32)
+        seg(4, 7, b"CCCC"),                # данные 8..11
     ])
     assert known(st) == b"AAAABBBBCCCC"
     assert st.start_known
