@@ -8,12 +8,11 @@
 from pathlib import Path
 
 from . import project as _project
+from . import store as _store
 from .models import Anchor, LabError
 from .streams import build_all, build_stream, import_source
 from .views import DEFAULT_WINDOW, session_to_dict, stream_to_dict
 
-import csv
-from datetime import datetime, timezone
 
 def create_project(path, name):
     """РАБОТАЕТ. Создаёт папку проекта (project.json, sources/, cache/)."""
@@ -56,8 +55,19 @@ def list_sessions(project, source_id):
     return entry["sessions"]
 
 
-def get_stream(project, session_id, direction, overlap_policy="first", checksum_policy="report"):
-    """РАБОТАЕТ. DirectedStream нужной сессии и направления."""
+def _policies(project) -> dict:
+    r = _store.get_settings(project.path)["reassembly"]
+    return {"overlap_policy": r["overlap_policy"], "checksum_policy": r["checksum_policy"]}
+
+
+def get_stream(project, session_id, direction, overlap_policy=None, checksum_policy=None):
+    """РАБОТАЕТ. DirectedStream нужной сессии и направления.
+
+    Политики сборки по умолчанию берутся из настроек проекта (project.json), а не зашиты в код.
+    """
+    pol = _policies(project)
+    overlap_policy = overlap_policy or pol["overlap_policy"]
+    checksum_policy = checksum_policy or pol["checksum_policy"]
     prefix = session_id.split(":")[0]               # session_id = <12 символов source_id>:<номер>
     for sid in project.sources:
         if sid.startswith(prefix):
@@ -70,7 +80,7 @@ def get_stream(project, session_id, direction, overlap_policy="first", checksum_
 def describe_sessions(project, source_id) -> list:
     """РАБОТАЕТ. Сессии источника в виде словарей (для таблицы «Сессии», JSON-совместимо)."""
     sessions = list_sessions(project, source_id)
-    built = build_all(sessions)
+    built = build_all(sessions, **_policies(project))
     return [session_to_dict(s, {d: built[(s.session_id, d)] for d in ("A>B", "B>A")}) for s in sessions]
 
 
@@ -99,65 +109,105 @@ def anchor(project, session_id, direction, start, end) -> Anchor:
 
 
 def find_by_action(project, action_id, window_s=2.0):
-    """РАБОТАЕТ (роль 3). Действие из журнала -> кандидаты (сессии и пакеты в окне времени)."""
-    # 1. Находим путь к файлу журнала действий в проекте
-    actions_path = Path(project.path) / "actions" / "actions.csv"
-    if not actions_path.exists():
-        # Если путь другой, пробуем поискать в корне или настройках
-        actions_path = Path(project.path) / "actions.csv"
-        if not actions_path.exists():
-            return []
+    """РАБОТАЕТ. Строка журнала (action_id = её idx) -> пакеты с данными в окне времени.
 
-    target_time = None
-    # 2. Читаем CSV-файл и ищем строку с нужным действием (по индексу или совпадению)
-    with open(actions_path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for idx, row in enumerate(reader):
-            # Если action_id передан как индекс или как строка времени
-            if str(idx) == str(action_id) or row.get("time_utc") == action_id:
-                target_time_str = row["time_utc"]
-                target_time = datetime.fromisoformat(target_time_str.replace("Z", "+00:00"))
-                break
-
-    if not target_time:
-        return []
-
-    candidates = []
-    # 3. Ищем среди всех сессий пакеты, чье время попадает в окно [target_time - window_s, target_time + window_s]
-    target_ts = target_time.timestamp()
-
-    for sid in list(project.sources.keys()):
+    Окно: capture_ts_us +- window_s, где capture_ts_us = время журнала минус clock_offset_s из настроек.
+    Возвращает список словарей {session_id, direction, pkt_no, ts_us, payload_len, stream_start,
+    stream_end}, по времени. stream_start/stream_end = None, если байты пакета не вошли в поток
+    (например, это повторная передача). Пустой список значит «в окне пакетов с данными нет»;
+    нет журнала или строки - это ошибка (LabError), а не пустой ответ.
+    """
+    actions = _store.read_actions(project.path)
+    try:
+        row = actions[int(action_id)]
+    except (ValueError, IndexError, TypeError):
+        raise LabError("BAD_ACTION", "no such action row", action_id=action_id, rows=len(actions)) from None
+    if row["capture_ts_us"] is None:
+        raise LabError("BAD_ACTION", "action time cannot be parsed: %s" % row["note"], action_id=action_id)
+    lo = row["capture_ts_us"] - round(window_s * 1_000_000)
+    hi = row["capture_ts_us"] + round(window_s * 1_000_000)
+    out = []
+    for sid in project.sources:
         for s in list_sessions(project, sid):
-            # Проверяем пакеты сессии (предполагаем, что у сессии есть доступ к пакетам или кадрам)
-            # Перебираем направления A>B и B>A
-            for direction in ("A>B", "B>A"):
-                try:
-                    stream = get_stream(project, s.session_id, direction)
-                    # Проверяем пакеты через trace или напрямую
-                    for span in stream.spans():
-                        # Для каждого куска проверяем пакеты происхождения
-                        for pkt_info in getattr(span, "packets", []):
-                            # pkt_info обычно содержит (pkt_no, ...)
-                            pass
-                except Exception:
+            for d in ("A>B", "B>A"):
+                hits = [g for g in s.segments[d] if g.declared_len > 0 and lo <= g.ts_us <= hi]
+                if not hits:
                     continue
-
-    # Возвращаем список кандидатов в нужном формате
-    return candidates
+                st = get_stream(project, s.session_id, d)
+                where = {p.pkt_no: (p.start, p.end) for p in st.pieces}
+                for g in hits:
+                    a, b = where.get(g.pkt_no, (None, None))
+                    out.append({"session_id": s.session_id, "direction": d, "pkt_no": g.pkt_no, "ts_us": g.ts_us,
+                                "payload_len": g.declared_len, "stream_start": a, "stream_end": b})
+    return sorted(out, key=lambda r: (r["ts_us"], r["pkt_no"]))
 
 
 def compare(project, ranges):
-    """РАБОТАЕТ (роль 3). Побайтовое сравнение диапазонов."""
-    rows = []
-    # Извлекаем байты для каждого диапазона из ranges и сравниваем побайтово
-    # ranges: список словарей с описанием сессии, направления и [start, end)
-    byte_streams = []
-    for r in ranges:
-        stream = get_stream(project, r["session_id"], r["direction"])
-        # Собираем байты нужного диапазона
-        # Для простоты возвращаем построчное сравнение позиций
+    """НЕ РЕАЛИЗОВАНО (роль 3). Честно падает, а не возвращает пустой результат."""
+    raise LabError("NOT_IMPLEMENTED", "compare() is not implemented yet")
 
-    return {"stub": False, "rows": rows}
+
+# ---------------------------------------------------------------- настройки, журнал, наблюдения
+def get_settings(project) -> dict:
+    """РАБОТАЕТ. Настройки проекта (политики сборки, смещение часов журнала)."""
+    return _store.get_settings(project.path)
+
+
+def set_settings(project, patch) -> dict:
+    """РАБОТАЕТ. Частичная смена настроек, например {"reassembly": {"overlap_policy": "unknown"}}."""
+    return _store.set_settings(project.path, patch)
+
+
+def load_actions(project, csv_path, columns=None, delimiter=","):
+    """РАБОТАЕТ. Копирует журнал действий в проект; columns задаёт, какая колонка что значит."""
+    return _store.load_actions(project.path, csv_path, columns, delimiter)
+
+
+def list_actions(project):
+    """РАБОТАЕТ. Строки журнала с временем журнала и временем в записи."""
+    return _store.read_actions(project.path)
+
+
+def add_observation(project, kind, text, anchors=None, author=""):
+    """РАБОТАЕТ. Наблюдение / правило / гипотеза / контрпример. Без якоря - только гипотеза."""
+    return _store.add_observation(project.path, kind, text, anchors, None, author)
+
+
+def set_observation_status(project, obs_id, status, note="", anchors=None):
+    """РАБОТАЕТ. Статус open / supported / refuted (refuted требует якорь контрпримера)."""
+    return _store.set_observation_status(project.path, obs_id, status, note, anchors)
+
+
+def list_observations(project):
+    """РАБОТАЕТ. Все записи с актуальным статусом и историей."""
+    return _store.list_observations(project.path)
+
+
+def verify_anchor(project, anchor) -> dict:
+    """РАБОТАЕТ. Проверка якоря заново по источнику: {"status": ok|stale|broken|missing, "reasons": [...]}.
+
+    ok      байты те же и сборка та же;
+    stale   байты те же, но изменились настройки сборки или происхождение (assembly_hash);
+    broken  байты в этом месте другие (или диапазон вышел за поток);
+    missing сессия или источник не найдены.
+    """
+    try:
+        st = get_stream(project, anchor["session_id"], anchor["direction"])
+    except KeyError:
+        return {"status": "missing", "reasons": ["сессия %s не найдена в проекте" % anchor["session_id"]]}
+    start = (anchor["seq_start"] - st.base_raw) & 0xFFFFFFFF      # привязка по TCP seq, а не по номеру куска
+    if start > 1 << 30 or not st.pieces:
+        return {"status": "broken", "reasons": ["seq_start не попадает в поток"]}
+    now = st.anchor(start, start + anchor["length"])
+    reasons = []
+    if now["bytes_sha256"] != anchor["bytes_sha256"]:
+        return {"status": "broken", "reasons": ["байты по якорю изменились"]}
+    if now["stream_off"] != anchor.get("stream_off", now["stream_off"]):
+        reasons.append("позиция в потоке изменилась: %s -> %s" % (anchor["stream_off"], now["stream_off"]))
+    if now["assembly_hash"] != anchor["assembly_hash"]:
+        reasons.append("сборка потока изменилась (настройки или происхождение байтов)")
+    return {"status": "stale" if reasons else "ok", "reasons": reasons}
+
 
 def apply_interpretation(project, stream, interp):
     """ЗАГЛУШКА (роль 4). Поток + интерпретация -> список ParsedMessage."""

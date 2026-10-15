@@ -6,3 +6,5 @@ wheelhouse/
 data/
 cache/
 *.sqlite
+work/
+work/

@@ -7,6 +7,7 @@ sys.path.insert(0, str(root_dir))
 
 from flask import Flask, render_template, abort
 from lab import api
+from lab.models import LabError
 
 app = Flask(__name__)
 
@@ -14,7 +15,10 @@ app = Flask(__name__)
 PROJECT_PATH = Path("data/stand_project")
 STAND_FILE = Path("data/stand/rec01.pcapng")
 
-project = api.open_project(PROJECT_PATH)
+try:
+    project = api.open_project(PROJECT_PATH)
+except LabError:                      # свежий клон: проекта ещё нет, создаём пустой, а не падаем
+    project = api.create_project(PROJECT_PATH, "demo")
 if STAND_FILE.exists():
     api.import_capture(project, STAND_FILE)
 
