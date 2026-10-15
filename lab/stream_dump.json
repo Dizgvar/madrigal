@@ -1,0 +1,29 @@
+{
+  "session_id": "6ca0a45ed8d0:1",
+  "direction": "A>B",
+  "roles_known": true,
+  "start_known": true,
+  "known_bytes": 90,
+  "total_len": 90,
+  "overlap_policy": "first",
+  "checksum_policy": "report",
+  "warnings": [],
+  "error": null,
+  "window": {
+    "offset": 0,
+    "end": 90,
+    "total": 90,
+    "truncated": false
+  },
+  "spans": [
+    {
+      "start": 0,
+      "end": 90,
+      "kind": "known",
+      "note": "",
+      "hex": "d17e0001010101afd17e00030202010015b8d17e0001010301add17e00020304000aa0d17e0003020501001eb4d17e00020306000aa2d17e0001010703abd17e000203080258fcd17e00030209030002a6d17e0002030a4e20ca",
+      "clipped": false
+    }
+  ],
+  "conflicts": []
+}
