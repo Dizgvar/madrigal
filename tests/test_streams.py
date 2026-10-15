@@ -1,5 +1,5 @@
 """Тесты сборки потока: по одному на каждую ситуацию из раздела 7.3 кейса."""
-from lab.capture import ACK, FIN, SYN, Segment
+from lab.capture import ACK, FIN, SYN, RST, Segment
 from lab.streams import build_all, build_stream, split_sessions
 
 C, S = ("10.0.0.5", 51000), ("10.0.0.9", 5020)
@@ -85,6 +85,21 @@ def test_port_reuse_makes_new_session():
     ss = split_sessions(a + b, "f" * 64)
     assert len(ss) == 2 and ss[0].session_id != ss[1].session_id
 
+def test_new_syn_after_rst_makes_new_session():
+    """RST обрывает сессию — следующий SYN открывает новую."""
+    a = [seg(1, 99, flags=SYN), seg(2, 100, b"AA"), seg(3, 102, flags=RST)]
+    b = [seg(4, 7000, flags=SYN), seg(5, 7001, b"ZZ")]
+    ss = split_sessions(a + b, "f" * 64)
+    assert len(ss) == 2
+
+
+def test_new_syn_different_isn_makes_new_session():
+    """Тот же SYN-флаг, но другой ISN — новая сессия (переустановка соединения)."""
+    a = [seg(1, 99, flags=SYN), seg(2, 100, b"AA")]
+    b = [seg(3, 5000, flags=SYN), seg(4, 5001, b"ZZ")]
+    ss = split_sessions(a + b, "f" * 64)
+    assert len(ss) == 2
+
 
 def test_syn_retransmission_same_session():
     ss = split_sessions([seg(1, 99, flags=SYN), seg(2, 99, flags=SYN), seg(3, 100, b"A")], "f" * 64)
@@ -94,6 +109,24 @@ def test_syn_retransmission_same_session():
 def test_seq_wraparound():
     st = stream_of([seg(1, 0xFFFFFFFC, b"AAAA"), seg(2, 0, b"BBBB")])
     assert known(st) == b"AAAABBBB"
+
+def test_seq_wraparound_with_syn():
+    """SYN около 2**32, данные переходят через ноль.
+
+    ISN = 0xFFFFFFFE. Байт №0 данных имеет seq = 0xFFFFFFFF.
+    Порядок в потоке:
+      seq 0xFFFFFFFF → байты 0..3   'AAAA'
+      seq 0x00000003 → байты 4..7   'BBBB'   (0xFFFFFFFF + 4 = 0x100000003)
+      seq 0x00000007 → байты 8..11  'CCCC'
+    """
+    st = stream_of([
+        seg(1, 0xFFFFFFFE, flags=SYN),    # SYN, ISN = 2**32-2
+        seg(2, 0xFFFFFFFF, b"AAAA"),      # данные 0..3
+        seg(3, 3, b"BBBB"),                # данные 4..7 (после перескока через 2**32)
+        seg(4, 7, b"CCCC"),                # данные 8..11
+    ])
+    assert known(st) == b"AAAABBBBCCCC"
+    assert st.start_known
 
 
 def test_tail_gap_when_fin_seen():
